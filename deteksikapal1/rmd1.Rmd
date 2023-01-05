@@ -1,0 +1,176 @@
+---
+title: "Laporan Deteksi Kapal VIIRS"
+output: html_document
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+  library(dplyr)
+  library(data.table)
+  library(terra)
+  library(ggplot2)
+  library(tidyterra)
+  library(rworldmap)
+  library(rworldxtra)
+  library(RColorBrewer)
+
+viirs <- rast('../dnbviirs/10082021_1831076.tif')
+
+warna <- colorRampPalette(c('black', 'white'))(256)
+
+fungsi.plot <- function(input, ekstent.input = NULL) {
+  if(!is.null(ekstent.input)) {
+    input <- terra::crop(input, ekstent.input)
+  }
+  gambar <- ggplot() +
+    geom_spatraster(data = input) +
+    scale_fill_gradientn(colors = warna) +
+    theme_minimal() +
+    theme(legend.title = element_blank(), legend.key.height = unit(.65, 'in'),
+          legend.key.width = unit(.135, 'in')) +
+    coord_sf()
+  return(gambar)
+  # if(!is.null(ekstent.input)) {
+  #   return(
+  #     gambar + 
+  #       coord_sf(xlim = ekstent.input[1:2], ylim = ekstent.input[3:4])
+  #   )
+  # } else {
+  #   return(gambar + coord_sf())
+  # }
+}
+```
+
+```{r cars}
+viirs.billion <- viirs * (10^9)
+viirs.billion[viirs.billion <= 0] <- 10^-9
+viirs.log <- log10(viirs.billion)
+```
+
+## Langkah Percobaan
+
+#### Melihat isi data VIIRS
+
+```{r pressure, echo=FALSE}
+suppressMessages(fungsi.plot(viirs))
+```
+
+#### Data VIIRS Billion
+
+```{r billion, echo=FALSE}
+warna <- colorRampPalette(c('black', 'white'))(256)
+suppressMessages(fungsi.plot(viirs.billion))
+```
+
+#### Data VIIRS log
+
+```{r log, echo=FALSE}
+warna <- colorRampPalette(c('black', 'white'))(256)
+suppressMessages(fungsi.plot(viirs.log))
+```
+
+#### Data VIIRS median
+
+Catatan: Untuk memudahkan identifikasi secara visual, area dibatasi pada wilayah Jawa.
+
+```{r echo=FALSE, fig.width=8, out.height='110%'}
+
+ekstent <- ext(105, 115, -10, -3)
+
+viirs.median <- EBImage::medianFilter(
+  viirs.log %>% as.array %>% .[,,1], 2
+) %>% 
+  rast(crs = crs(viirs), extent = ext(viirs)) 
+
+suppressMessages(fungsi.plot(viirs.median, ekstent))
+```
+
+#### Data SMI (log VIIRS - median)
+
+```{r echo=FALSE, fig.width=8, out.height='110%'}
+
+viirs.smi <- viirs.log - viirs.median
+warna <- rev(warna)
+suppressMessages(fungsi.plot(viirs.smi, ekstent))
+```
+
+#### Threshold
+
+Nilai threshold ditentukan 0.035 pada SMI log
+
+```{r echo=FALSE, fig.width=7, out.width='150%'}
+viirs.smi[viirs.smi <= 0.035] <- NA
+suppressMessages(fungsi.plot(viirs.smi, ekstent))
+```
+
+#### Memilih wilayah perairan
+
+```{r echo=FALSE, fig.width=7, out.width='150%', dpi=100}
+peta <- getMap('high') %>% 
+  sf::st_as_sf()
+
+# peta.rast <- vect(peta)
+#   hasil.mask <- mask(input, peta.rast, inverse = TRUE) 
+#   lokasi <- data.table(
+#     hasil.mask %>%
+#       terra::xyFromCell(1:ncell(input)),
+#     nilai = hasil.mask %>%
+#       terra::extract(1:ncell(input)) %>% unlist
+#   )
+#   
+# koordinat <- lokasi[!(is.na(nilai) | is.nan(nilai))]
+  
+peta.rast <- peta %>% 
+  vect %>% 
+  terra::crop(ekstent)
+
+hasil.mask <- mask(viirs.smi, peta.rast, inverse = TRUE) 
+hasil.mask <- terra::crop(hasil.mask, ekstent)
+
+# knitr::kable(lokasi[1:50])
+
+suppressMessages(
+  gambar.output <- ggplot() +
+  geom_spatraster(data = hasil.mask) +
+  geom_sf(data = peta, fill = NA, color = 'green') +
+  scale_fill_gradientn(colors = warna) +
+  theme_minimal() +
+  theme(legend.title = element_blank(), legend.key.height = unit(.65, 'in'),
+        legend.key.width = unit(.135, 'in')) +
+  coord_sf(xlim = ekstent[1:2], ekstent[3:4])
+)
+
+suppressMessages(gambar.output)
+```
+
+#### Menaruh data kapal di peta
+
+```{r fig.width=9, out.width='100%'}
+peta.rast <- vect(peta)
+  
+hasil.mask <- mask(viirs.smi, peta.rast, inverse = TRUE) 
+hasil.mask <- terra::crop(hasil.mask, ekstent)
+
+lokasi <- data.table(
+  hasil.mask %>%
+    terra::xyFromCell(1:ncell(hasil.mask)),
+  nilai = hasil.mask %>%
+    terra::extract(1:ncell(hasil.mask)) %>% unlist
+)
+  
+lokasi <- lokasi[!(is.na(nilai) | is.nan(nilai))]
+
+library(leaflet)
+
+peta.leaflet <- leaflet(data = lokasi) %>% #[between(x, 108, 110) & between(y, -10, -8)]) %>% 
+  addTiles() %>% 
+  addCircles(lng = ~x, lat = ~y)
+
+peta.leaflet
+```
+
+#### Analisa
+
+-   Masih terdapat banyak titik terdeteksi karena hanya indeks SMI saja yang digunakan
+
+-   Perlu dilanjutkan penerapan filter berikutnya untuk menghasilkan indeks selain indeks SMI
